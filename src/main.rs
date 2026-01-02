@@ -1,69 +1,52 @@
 mod apcaccess;
 
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicU64;
 use tokio::time::{interval, Duration};
 
 use actix_web::middleware::Compress;
 use actix_web::{web, App, HttpResponse, HttpServer, Result};
 use log::{debug, info};
-use prometheus_client::encoding::text::encode;
-use prometheus_client::encoding::EncodeLabelSet;
-use prometheus_client::metrics::gauge::Gauge;
-use prometheus_client::metrics::info::Info;
-use prometheus_client::registry::Registry;
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct ApcInfoLabels {
-    pub apc: String,
-    pub hostname: String,
-    pub upsname: String,
-    pub version: String,
-    pub cable: String,
-    pub model: String,
-    pub upsmode: String,
-    pub driver: String,
-    pub apcmodel: String,
-}
+use prometheus::{Encoder, GaugeVec, IntGaugeVec, Opts, Registry, TextEncoder};
 
 pub struct AppState {
     pub registry: Registry,
+    pub info_gauge: IntGaugeVec,
+    pub gauges: Arc<Mutex<std::collections::HashMap<String, GaugeVec>>>,
     pub stats: std::collections::BTreeMap<String, String>,
 }
 
 pub async fn metrics_handler(state: web::Data<Arc<Mutex<AppState>>>) -> Result<HttpResponse> {
     let state = state.lock().unwrap();
-    let mut body = String::new();
-    encode(&mut body, &state.registry).unwrap();
+    let encoder = TextEncoder::new();
+    let metric_families = state.registry.gather();
+    let mut buffer = Vec::new();
+    encoder.encode(&metric_families, &mut buffer).unwrap();
+    
     Ok(HttpResponse::Ok()
         .content_type("text/plain; charset=utf-8")
-        .body(body))
+        .body(buffer))
 }
 
 fn update_metrics(state: &mut AppState) {
-    // Clear and re-register all metrics
-    state.registry = Registry::default();
+    // Update info gauge with labels
+    state.info_gauge.reset();
+    state.info_gauge
+        .with_label_values(&[
+            &state.stats.get("APC").cloned().unwrap_or_default(),
+            &state.stats.get("HOSTNAME").cloned().unwrap_or_default(),
+            &state.stats.get("UPSNAME").cloned().unwrap_or_default(),
+            &state.stats.get("VERSION").cloned().unwrap_or_default(),
+            &state.stats.get("CABLE").cloned().unwrap_or_default(),
+            &state.stats.get("MODEL").cloned().unwrap_or_default(),
+            &state.stats.get("UPSMODE").cloned().unwrap_or_default(),
+            &state.stats.get("DRIVER").cloned().unwrap_or_default(),
+            &state.stats.get("APCMODEL").cloned().unwrap_or_default(),
+        ])
+        .set(1);
 
-    // Create APC info metric with labels
-    let apc_labels = ApcInfoLabels {
-        apc: state.stats.get("APC").cloned().unwrap_or_default(),
-        hostname: state.stats.get("HOSTNAME").cloned().unwrap_or_default(),
-        upsname: state.stats.get("UPSNAME").cloned().unwrap_or_default(),
-        version: state.stats.get("VERSION").cloned().unwrap_or_default(),
-        cable: state.stats.get("CABLE").cloned().unwrap_or_default(),
-        model: state.stats.get("MODEL").cloned().unwrap_or_default(),
-        upsmode: state.stats.get("UPSMODE").cloned().unwrap_or_default(),
-        driver: state.stats.get("DRIVER").cloned().unwrap_or_default(),
-        apcmodel: state.stats.get("APCMODEL").cloned().unwrap_or_default(),
-    };
-    let apc_info = Info::new(apc_labels);
-    state.registry.register(
-        "apcupsd",
-        "APC UPS daemon information",
-        apc_info,
-    );
-
-    // Register all numeric metrics as gauges
+    // Update numeric metrics as gauges
+    let mut gauges = state.gauges.lock().unwrap();
+    
     for (key, value) in &state.stats {
         // Skip the tag keys that are already in the info metric
         if matches!(key.as_str(), "APC" | "HOSTNAME" | "UPSNAME" | "VERSION" | "CABLE" | "MODEL" | "UPSMODE" | "DRIVER" | "APCMODEL") {
@@ -72,11 +55,17 @@ fn update_metrics(state: &mut AppState) {
 
         // Try to parse as f64
         if let Ok(numeric_value) = value.parse::<f64>() {
-            let gauge: Gauge<f64, AtomicU64> = Gauge::default();
-            gauge.set(numeric_value);
             let metric_name = format!("apcupsd_{}", key.to_lowercase());
-            let description = format!("APC UPS {}", key);
-            state.registry.register(metric_name, description, gauge);
+            
+            // Get or create the gauge for this metric
+            let gauge = gauges.entry(metric_name.clone()).or_insert_with(|| {
+                let opts = Opts::new(metric_name.clone(), format!("APC UPS {}", key));
+                let gauge_vec = GaugeVec::new(opts, &[]).unwrap();
+                state.registry.register(Box::new(gauge_vec.clone())).unwrap();
+                gauge_vec
+            });
+            
+            gauge.with_label_values(&[]).set(numeric_value);
         }
     }
 }
@@ -109,8 +98,22 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to fetch initial APC UPS stats");
     debug!("Fetched stats: {:?}", stats);
     info!("Successfully fetched initial APC UPS stats");
+    
+    // Create registry and metrics
+    let registry = Registry::new();
+    
+    // Create info gauge with all label names (using _metadata suffix to avoid info type confusion)
+    let info_opts = Opts::new("apcupsd_metadata", "APC UPS daemon information");
+    let info_gauge = IntGaugeVec::new(
+        info_opts,
+        &["apc", "hostname", "upsname", "version", "cable", "model", "upsmode", "driver", "apcmodel"]
+    ).unwrap();
+    registry.register(Box::new(info_gauge.clone())).unwrap();
+    
     let state = Arc::new(Mutex::new(AppState {
-        registry: Registry::default(),
+        registry,
+        info_gauge,
+        gauges: Arc::new(Mutex::new(std::collections::HashMap::new())),
         stats: stats.clone(),
     }));
 
