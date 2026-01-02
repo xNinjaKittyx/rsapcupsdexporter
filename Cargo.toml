@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-actix-web = "4.12.1"
+actix-web = { version = "4.12.1", default-features = false, features = ["compress-gzip", "macros"] }
 env_logger = "0.11.8"
 log = "0.4.29"
 prometheus-client = "0.24.0"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", default-features = false, features = ["time"] }
 
 [profile.release]
 opt-level = "z"     # Optimize for size
@@ -16,3 +16,4 @@ lto = true          # Link Time Optimization
 codegen-units = 1   # Better optimization
 strip = true        # Strip symbols
 panic = "abort"     # Smaller panic handler
+overflow-checks = false  # Disable overflow checks in release

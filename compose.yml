@@ -2,11 +2,11 @@ services:
   rsapcupsdexporter:
     build: .
     ports:
-      - "4050:4050"
+      - "9090:9090"
     environment:
       - RUST_LOG=info
       - APCUPSD_HOST=${APCUPSD_HOST}
       - APCUPSD_PORT=3551
       - INTERVAL=10
       - TIMEOUT=15
-      - METRICS_PORT=4050
+      - METRICS_PORT=9090

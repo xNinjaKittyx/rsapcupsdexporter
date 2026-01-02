@@ -91,9 +91,9 @@ async fn main() -> std::io::Result<()> {
         .parse()
         .unwrap_or(3551);
     let port_bind: u16 = std::env::var("METRICS_PORT")
-        .unwrap_or_else(|_| "8080".to_string())
+        .unwrap_or_else(|_| "9090".to_string())
         .parse()
-        .unwrap_or(8080);
+        .unwrap_or(9090);
     let fetch_interval: u64 = std::env::var("INTERVAL")
         .unwrap_or_else(|_| "10".to_string())
         .parse()

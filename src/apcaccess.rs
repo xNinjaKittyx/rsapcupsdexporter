@@ -75,8 +75,8 @@ pub fn get(host: &str, port: u16, timeout: u64) -> Result<String, ApcAccessError
     // Send the status command
     stream.write_all(CMD_STATUS)?;
 
-    // Read the response
-    let mut buffer = String::new();
+    // Read the response - accumulate bytes first
+    let mut buffer = Vec::new();
     let mut buf = [0u8; BUFFER_SIZE];
 
     loop {
@@ -84,14 +84,15 @@ pub fn get(host: &str, port: u16, timeout: u64) -> Result<String, ApcAccessError
         if n == 0 {
             break;
         }
-        buffer.push_str(&String::from_utf8_lossy(&buf[..n]));
+        buffer.extend_from_slice(&buf[..n]);
 
-        if buffer.ends_with(EOF) {
+        // Check if we have EOF at the end
+        if buffer.len() >= EOF.len() && buffer.ends_with(EOF.as_bytes()) {
             break;
         }
     }
 
-    Ok(buffer)
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 /// Split the output from get() into lines, removing the length and newline chars.
@@ -172,15 +173,17 @@ pub fn strip_units_from_lines(lines: &[String]) -> Vec<String> {
     lines
         .iter()
         .map(|line| {
-            let mut result = line.clone();
+            // Check each unit without allocating format string
             for unit in ALL_UNITS {
-                let suffix = format!(" {}", unit);
-                if result.ends_with(&suffix) {
-                    result = result[..result.len() - suffix.len()].to_string();
-                    break;
+                if let Some(stripped) = line.strip_suffix(unit) {
+                    // Also strip the space before the unit
+                    if let Some(final_stripped) = stripped.strip_suffix(' ') {
+                        return final_stripped.to_string();
+                    }
                 }
             }
-            result
+            // No unit found, return as-is
+            line.clone()
         })
         .collect()
 }
